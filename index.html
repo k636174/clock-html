@@ -1,0 +1,256 @@
+﻿<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Clock (JST / UTC / UnixTime)</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      font-family: "Consolas", "Courier New", monospace;
+      background:
+        radial-gradient(circle at 50% 50%, #0d1a0d 0%, #050805 62%, #020302 100%);
+      color: #8dff9c;
+      text-shadow: 0 0 8px rgba(80, 255, 120, 0.35);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        to bottom,
+        rgba(110, 255, 140, 0.08) 0px,
+        rgba(110, 255, 140, 0.08) 1px,
+        transparent 2px,
+        transparent 4px
+      );
+      opacity: 0.25;
+    }
+
+    main {
+      min-height: 100dvh;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr 1fr;
+      gap: 10px;
+      padding: 10px;
+    }
+
+    .row {
+      background: linear-gradient(180deg, rgba(10, 28, 12, 0.9), rgba(4, 16, 6, 0.95));
+      border: 1px solid rgba(92, 255, 128, 0.35);
+      border-radius: 8px;
+      box-shadow:
+        inset 0 0 24px rgba(54, 240, 90, 0.12),
+        0 0 24px rgba(40, 220, 90, 0.12);
+      padding: 24px 28px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .label {
+      color: #61ff84;
+      font-size: clamp(1.6rem, 2.8vw, 2.4rem);
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    .value {
+      color: #b4ffbe;
+      font-size: clamp(2.4rem, 6.2vw, 5.2rem);
+      font-weight: 700;
+      line-height: 1.3;
+      white-space: pre-line;
+      word-break: break-word;
+      text-shadow:
+        0 0 8px rgba(120, 255, 150, 0.5),
+        0 0 18px rgba(120, 255, 150, 0.25);
+      animation: flicker 2.6s infinite;
+    }
+
+    .weather {
+      grid-column: 2;
+      grid-row: 1 / 4;
+    }
+
+    .weather .value {
+      font-size: clamp(1.9rem, 3.4vw, 3.2rem);
+    }
+
+    .forecast {
+      margin-top: 10px;
+      display: grid;
+      gap: 6px;
+      font-size: clamp(1.1rem, 1.6vw, 1.4rem);
+      line-height: 1.35;
+      color: #9dffad;
+      text-shadow: 0 0 6px rgba(120, 255, 150, 0.22);
+    }
+
+    .forecast-row {
+      display: grid;
+      grid-template-columns: 1.5fr 1.5fr 1fr;
+      gap: 8px;
+      align-items: baseline;
+    }
+
+    .forecast-row span:last-child {
+      text-align: right;
+    }
+
+    @media (max-width: 900px) {
+      main {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto;
+      }
+
+      .weather {
+        grid-column: auto;
+        grid-row: auto;
+      }
+    }
+
+    @keyframes flicker {
+      0%, 100% { opacity: 1; }
+      48% { opacity: 0.92; }
+      50% { opacity: 0.86; }
+      52% { opacity: 0.96; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="row"><div class="label">日本時間 (JST)</div><div id="jst" class="value">-</div></section>
+    <section class="row"><div class="label">UTC</div><div id="utc" class="value">-</div></section>
+    <section class="row"><div class="label">UnixTime</div><div id="unix" class="value">-</div></section>
+    <section class="row weather">
+      <div class="label">神田駅周辺の天気</div>
+      <div id="weatherCurrent" class="value">取得中...</div>
+      <div id="forecast" class="forecast">週間予報を取得中...</div>
+    </section>
+  </main>
+
+  <script>
+    const WEATHER_URL = 'https://api.open-meteo.com/v1/forecast?latitude=35.6917&longitude=139.7709&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=Asia%2FTokyo&forecast_days=7';
+
+    function weatherCodeToJa(code) {
+      const map = {
+        0: '快晴',
+        1: '晴れ',
+        2: '一部くもり',
+        3: 'くもり',
+        45: '霧',
+        48: '着氷性の霧',
+        51: '弱い霧雨',
+        53: '霧雨',
+        55: '強い霧雨',
+        56: '弱い着氷性霧雨',
+        57: '強い着氷性霧雨',
+        61: '弱い雨',
+        63: '雨',
+        65: '強い雨',
+        66: '弱い着氷性の雨',
+        67: '強い着氷性の雨',
+        71: '弱い雪',
+        73: '雪',
+        75: '強い雪',
+        77: '雪粒',
+        80: '弱いにわか雨',
+        81: 'にわか雨',
+        82: '強いにわか雨',
+        85: '弱いにわか雪',
+        86: '強いにわか雪',
+        95: '雷雨',
+        96: '弱いひょうを伴う雷雨',
+        99: '強いひょうを伴う雷雨'
+      };
+      return map[code] || `不明 (code: ${code})`;
+    }
+
+    async function updateWeather() {
+      const weatherCurrentEl = document.getElementById('weatherCurrent');
+      const forecastEl = document.getElementById('forecast');
+      try {
+        const response = await fetch(WEATHER_URL, { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        const current = data.current;
+        const daily = data.daily;
+        const weatherText = weatherCodeToJa(current.weather_code);
+        weatherCurrentEl.textContent =
+          `${weatherText}\n` +
+          `${current.temperature_2m}°C (体感 ${current.apparent_temperature}°C)\n` +
+          `風速 ${current.wind_speed_10m} km/h`;
+
+        const rows = daily.time.map((ymd, index) => {
+          const [y, m, d] = ymd.split('-').map(Number);
+          const date = new Date(y, m - 1, d);
+          const dateLabel = new Intl.DateTimeFormat('ja-JP', {
+            month: '2-digit',
+            day: '2-digit',
+            weekday: 'short'
+          }).format(date);
+          const dayWeather = weatherCodeToJa(daily.weather_code[index]);
+          const max = Math.round(daily.temperature_2m_max[index]);
+          const min = Math.round(daily.temperature_2m_min[index]);
+          return { dateLabel, dayWeather, tempLabel: `${max} / ${min}°C` };
+        });
+
+        const fragment = document.createDocumentFragment();
+        rows.forEach((row) => {
+          const line = document.createElement('div');
+          line.className = 'forecast-row';
+
+          const dateSpan = document.createElement('span');
+          dateSpan.textContent = row.dateLabel;
+          const weatherSpan = document.createElement('span');
+          weatherSpan.textContent = row.dayWeather;
+          const tempSpan = document.createElement('span');
+          tempSpan.textContent = row.tempLabel;
+
+          line.append(dateSpan, weatherSpan, tempSpan);
+          fragment.appendChild(line);
+        });
+        forecastEl.replaceChildren(fragment);
+      } catch (error) {
+        weatherCurrentEl.textContent = `天気の取得に失敗\n${String(error.message || error)}`;
+        forecastEl.textContent = '週間予報の取得に失敗';
+      }
+    }
+
+    function updateClock() {
+      const now = new Date();
+      const jstDate = now.toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo' });
+      const jstTime = now.toLocaleTimeString('ja-JP', {
+        timeZone: 'Asia/Tokyo',
+        hour12: false
+      });
+      const utcIso = now.toISOString();
+      const utcDate = utcIso.slice(0, 10);
+      const utcTime = utcIso.slice(11, 19) + ' UTC';
+
+      document.getElementById('jst').textContent = `${jstDate}\n${jstTime}`;
+      document.getElementById('utc').textContent = `${utcDate}\n${utcTime}`;
+      document.getElementById('unix').textContent = Math.floor(now.getTime() / 1000).toString();
+    }
+
+    updateClock();
+    setInterval(updateClock, 1000);
+    updateWeather();
+    setInterval(updateWeather, 10 * 60 * 1000);
+    setInterval(() => location.reload(), 5 * 60 * 1000);
+  </script>
+</body>
+</html>
