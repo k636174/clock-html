@@ -81,14 +81,59 @@
     .weather {
       grid-column: 2;
       grid-row: 1 / 4;
+      justify-content: flex-start;
+      gap: 14px;
     }
 
     .weather .value {
       font-size: clamp(1.9rem, 3.4vw, 3.2rem);
     }
 
+    .zip-config {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .zip-config label {
+      font-size: clamp(1rem, 1.2vw, 1.2rem);
+      color: #9dffad;
+    }
+
+    .zip-config input {
+      width: 130px;
+      padding: 6px 8px;
+      border: 1px solid rgba(92, 255, 128, 0.45);
+      border-radius: 4px;
+      background: rgba(2, 8, 2, 0.9);
+      color: #b4ffbe;
+      font-family: inherit;
+      font-size: 1rem;
+    }
+
+    .zip-config button {
+      padding: 6px 10px;
+      border: 1px solid rgba(92, 255, 128, 0.45);
+      border-radius: 4px;
+      background: rgba(12, 40, 16, 0.9);
+      color: #b4ffbe;
+      font-family: inherit;
+      cursor: pointer;
+    }
+
+    .zip-config button:hover {
+      background: rgba(22, 58, 25, 0.95);
+    }
+
+    .zip-status {
+      min-height: 1.2em;
+      font-size: 0.95rem;
+      color: #9dffad;
+    }
+
     .forecast {
-      margin-top: 10px;
+      margin-top: 4px;
       display: grid;
       gap: 6px;
       font-size: clamp(1.1rem, 1.6vw, 1.4rem);
@@ -134,14 +179,27 @@
     <section class="row"><div class="label">UTC</div><div id="utc" class="value">-</div></section>
     <section class="row"><div class="label">UnixTime</div><div id="unix" class="value">-</div></section>
     <section class="row weather">
-      <div class="label">神田駅周辺の天気</div>
+      <div id="weatherTitle" class="label">神田駅周辺の天気</div>
+      <form id="zipForm" class="zip-config">
+        <label for="zipInput">郵便番号</label>
+        <input id="zipInput" name="zip" type="text" inputmode="numeric" placeholder="1010044" maxlength="8" pattern="\d{3}-?\d{4}" />
+        <button type="submit">設定</button>
+        <button type="button" id="zipReset">初期値に戻す</button>
+      </form>
+      <div id="zipStatus" class="zip-status"></div>
       <div id="weatherCurrent" class="value">取得中...</div>
       <div id="forecast" class="forecast">週間予報を取得中...</div>
     </section>
   </main>
 
   <script>
-    const WEATHER_URL = 'https://api.open-meteo.com/v1/forecast?latitude=35.6917&longitude=139.7709&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=Asia%2FTokyo&forecast_days=7';
+    const DEFAULT_LOCATION = {
+      label: '神田駅周辺',
+      latitude: 35.6917,
+      longitude: 139.7709,
+      zip: ''
+    };
+    const ZIP_STORAGE_KEY = 'clock_weather_zip';
 
     function weatherCodeToJa(code) {
       const map = {
@@ -177,56 +235,135 @@
       return map[code] || `不明 (code: ${code})`;
     }
 
+    function normalizeZip(rawZip) {
+      return rawZip.replace(/[^\d]/g, '').slice(0, 7);
+    }
+
+    function buildWeatherUrl(latitude, longitude) {
+      const params = new URLSearchParams({
+        latitude: String(latitude),
+        longitude: String(longitude),
+        current: 'temperature_2m,apparent_temperature,weather_code,wind_speed_10m',
+        daily: 'weather_code,temperature_2m_max,temperature_2m_min',
+        timezone: 'Asia/Tokyo',
+        forecast_days: '7'
+      });
+      return `https://api.open-meteo.com/v1/forecast?${params.toString()}`;
+    }
+
+    async function resolveLocationByZip(zip) {
+      const response = await fetch(`https://geoapi.heartrails.com/api/json?method=searchByPostal&postal=${zip}`, { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`郵便番号検索APIエラー HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      const location = data?.response?.location?.[0];
+      if (!location || !location.x || !location.y) {
+        throw new Error('郵便番号から位置情報を取得できませんでした');
+      }
+      const label = [location.prefecture, location.city, location.town].filter(Boolean).join('');
+      return {
+        label: label || `〒${zip}`,
+        latitude: Number(location.y),
+        longitude: Number(location.x),
+        zip
+      };
+    }
+
+    async function fetchWeather(location) {
+      const response = await fetch(buildWeatherUrl(location.latitude, location.longitude), { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response.json();
+    }
+
+    function updateWeatherTitle(location) {
+      document.getElementById('weatherTitle').textContent = `${location.label}の天気`;
+    }
+
+    function renderWeather(data) {
+      const weatherCurrentEl = document.getElementById('weatherCurrent');
+      const forecastEl = document.getElementById('forecast');
+      const current = data.current;
+      const daily = data.daily;
+      const weatherText = weatherCodeToJa(current.weather_code);
+      weatherCurrentEl.textContent =
+        `${weatherText}\n` +
+        `${current.temperature_2m}°C (体感 ${current.apparent_temperature}°C)\n` +
+        `風速 ${current.wind_speed_10m} km/h`;
+
+      const rows = daily.time.map((ymd, index) => {
+        const [y, m, d] = ymd.split('-').map(Number);
+        const date = new Date(y, m - 1, d);
+        const dateLabel = new Intl.DateTimeFormat('ja-JP', {
+          month: '2-digit',
+          day: '2-digit',
+          weekday: 'short'
+        }).format(date);
+        const dayWeather = weatherCodeToJa(daily.weather_code[index]);
+        const max = Math.round(daily.temperature_2m_max[index]);
+        const min = Math.round(daily.temperature_2m_min[index]);
+        return { dateLabel, dayWeather, tempLabel: `${max} / ${min}°C` };
+      });
+
+      const fragment = document.createDocumentFragment();
+      rows.forEach((row) => {
+        const line = document.createElement('div');
+        line.className = 'forecast-row';
+
+        const dateSpan = document.createElement('span');
+        dateSpan.textContent = row.dateLabel;
+        const weatherSpan = document.createElement('span');
+        weatherSpan.textContent = row.dayWeather;
+        const tempSpan = document.createElement('span');
+        tempSpan.textContent = row.tempLabel;
+
+        line.append(dateSpan, weatherSpan, tempSpan);
+        fragment.appendChild(line);
+      });
+      forecastEl.replaceChildren(fragment);
+    }
+
+    let currentLocation = { ...DEFAULT_LOCATION };
+
     async function updateWeather() {
       const weatherCurrentEl = document.getElementById('weatherCurrent');
       const forecastEl = document.getElementById('forecast');
       try {
-        const response = await fetch(WEATHER_URL, { cache: 'no-store' });
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-        const data = await response.json();
-        const current = data.current;
-        const daily = data.daily;
-        const weatherText = weatherCodeToJa(current.weather_code);
-        weatherCurrentEl.textContent =
-          `${weatherText}\n` +
-          `${current.temperature_2m}°C (体感 ${current.apparent_temperature}°C)\n` +
-          `風速 ${current.wind_speed_10m} km/h`;
-
-        const rows = daily.time.map((ymd, index) => {
-          const [y, m, d] = ymd.split('-').map(Number);
-          const date = new Date(y, m - 1, d);
-          const dateLabel = new Intl.DateTimeFormat('ja-JP', {
-            month: '2-digit',
-            day: '2-digit',
-            weekday: 'short'
-          }).format(date);
-          const dayWeather = weatherCodeToJa(daily.weather_code[index]);
-          const max = Math.round(daily.temperature_2m_max[index]);
-          const min = Math.round(daily.temperature_2m_min[index]);
-          return { dateLabel, dayWeather, tempLabel: `${max} / ${min}°C` };
-        });
-
-        const fragment = document.createDocumentFragment();
-        rows.forEach((row) => {
-          const line = document.createElement('div');
-          line.className = 'forecast-row';
-
-          const dateSpan = document.createElement('span');
-          dateSpan.textContent = row.dateLabel;
-          const weatherSpan = document.createElement('span');
-          weatherSpan.textContent = row.dayWeather;
-          const tempSpan = document.createElement('span');
-          tempSpan.textContent = row.tempLabel;
-
-          line.append(dateSpan, weatherSpan, tempSpan);
-          fragment.appendChild(line);
-        });
-        forecastEl.replaceChildren(fragment);
+        const data = await fetchWeather(currentLocation);
+        renderWeather(data);
       } catch (error) {
         weatherCurrentEl.textContent = `天気の取得に失敗\n${String(error.message || error)}`;
         forecastEl.textContent = '週間予報の取得に失敗';
+      }
+    }
+
+    async function applyZipSetting(rawZip) {
+      const zipStatusEl = document.getElementById('zipStatus');
+      const zip = normalizeZip(rawZip);
+      if (!zip) {
+        localStorage.removeItem(ZIP_STORAGE_KEY);
+        currentLocation = { ...DEFAULT_LOCATION };
+        updateWeatherTitle(currentLocation);
+        zipStatusEl.textContent = '初期地点（神田駅周辺）を使用します。';
+        await updateWeather();
+        return;
+      }
+      if (!/^\d{7}$/.test(zip)) {
+        zipStatusEl.textContent = '郵便番号は7桁で入力してください。';
+        return;
+      }
+      zipStatusEl.textContent = '郵便番号から地点を検索中...';
+      try {
+        const location = await resolveLocationByZip(zip);
+        currentLocation = location;
+        localStorage.setItem(ZIP_STORAGE_KEY, zip);
+        updateWeatherTitle(currentLocation);
+        zipStatusEl.textContent = `〒${zip} (${location.label}) を保存しました。`;
+        await updateWeather();
+      } catch (error) {
+        zipStatusEl.textContent = `設定に失敗しました: ${String(error.message || error)}`;
       }
     }
 
@@ -246,9 +383,27 @@
       document.getElementById('unix').textContent = Math.floor(now.getTime() / 1000).toString();
     }
 
+    document.getElementById('zipForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      await applyZipSetting(document.getElementById('zipInput').value);
+    });
+
+    document.getElementById('zipReset').addEventListener('click', async () => {
+      document.getElementById('zipInput').value = '';
+      await applyZipSetting('');
+    });
+
     updateClock();
     setInterval(updateClock, 1000);
-    updateWeather();
+
+    const savedZip = normalizeZip(localStorage.getItem(ZIP_STORAGE_KEY) || '');
+    if (savedZip) {
+      document.getElementById('zipInput').value = savedZip;
+      applyZipSetting(savedZip);
+    } else {
+      updateWeatherTitle(currentLocation);
+      updateWeather();
+    }
     setInterval(updateWeather, 10 * 60 * 1000);
     setInterval(() => location.reload(), 5 * 60 * 1000);
   </script>
