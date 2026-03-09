@@ -37,7 +37,7 @@
     main {
       min-height: 100dvh;
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: 1fr 1fr 1fr;
       grid-template-rows: 1fr 1fr 1fr;
       gap: 10px;
       padding: 10px;
@@ -80,6 +80,13 @@
 
     .weather {
       grid-column: 2;
+      grid-row: 1 / 4;
+      justify-content: flex-start;
+      gap: 14px;
+    }
+
+    .redmine {
+      grid-column: 3;
       grid-row: 1 / 4;
       justify-content: flex-start;
       gap: 14px;
@@ -281,7 +288,9 @@
       <div id="weatherCurrent" class="value">取得中...</div>
       <div id="forecast" class="forecast">週間予報を取得中...</div>
 
-      <div class="sub-label">Redmineチケット</div>
+    </section>
+    <section class="row redmine">
+      <div class="label">Redmineチケット</div>
       <form id="redmineForm" class="redmine-config">
         <label for="redmineBaseUrl">Redmine URL</label>
         <input id="redmineBaseUrl" type="url" placeholder="https://redmine.example.com" />
@@ -380,7 +389,7 @@
     function buildRedmineIssuesUrl(baseUrl, target) {
       const params = new URLSearchParams({
         status_id: '*',
-        sort: 'due_date:asc,priority:desc,id:desc',
+        sort: 'due_date:asc,id:desc',
         limit: '50'
       });
       params.set(target === 'authored' ? 'author_id' : 'assigned_to_id', 'me');
@@ -410,18 +419,27 @@
       const listEl = document.getElementById('redmineList');
       const summaryEl = document.getElementById('redmineSummary');
       const today = getJstYmd();
-      const overdueCount = issues.filter((issue) => issue.due_date && issue.due_date < today).length;
-      const dueTodayCount = issues.filter((issue) => issue.due_date === today).length;
+      const activeIssues = issues
+        .filter((issue) => !/closed|resolved|完了|終了/i.test(issue.status?.name || ''))
+        .sort((a, b) => {
+          const dueA = a.due_date || '9999-12-31';
+          const dueB = b.due_date || '9999-12-31';
+          if (dueA !== dueB) return dueA.localeCompare(dueB);
+          return b.id - a.id;
+        });
 
-      summaryEl.textContent = `総件数 ${totalCount} / 期限切れ ${overdueCount} / 本日期限 ${dueTodayCount}`;
+      const overdueCount = activeIssues.filter((issue) => issue.due_date && issue.due_date < today).length;
+      const dueTodayCount = activeIssues.filter((issue) => issue.due_date === today).length;
 
-      if (!issues.length) {
+      summaryEl.textContent = `表示 ${activeIssues.length} / 総件数 ${totalCount} / 期限切れ ${overdueCount} / 本日期限 ${dueTodayCount}`;
+
+      if (!activeIssues.length) {
         listEl.textContent = '表示対象のチケットはありません。';
         return;
       }
 
       const fragment = document.createDocumentFragment();
-      issues.forEach((issue) => {
+      activeIssues.forEach((issue) => {
         const row = document.createElement('a');
         row.className = 'ticket-row';
         row.target = '_blank';
@@ -430,10 +448,8 @@
 
         const statusName = issue.status?.name || '-';
         const dueDate = issue.due_date || '-';
-        const isClosed = /closed|resolved|完了|終了/i.test(statusName);
         if (issue.due_date && issue.due_date < today) row.classList.add('is-overdue');
         else if (issue.due_date === today) row.classList.add('is-due-today');
-        if (isClosed) row.classList.add('is-closed');
 
         const title = document.createElement('div');
         title.textContent = `#${issue.id} ${issue.subject}`;
