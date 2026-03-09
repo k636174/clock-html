@@ -153,6 +153,97 @@
       text-align: right;
     }
 
+    .sub-label {
+      color: #61ff84;
+      font-size: clamp(1.2rem, 2vw, 1.7rem);
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      margin-top: 8px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(92, 255, 128, 0.25);
+    }
+
+    .redmine-config {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+
+    .redmine-config label {
+      font-size: 0.95rem;
+      color: #9dffad;
+    }
+
+    .redmine-config input,
+    .redmine-config select,
+    .redmine-config button {
+      width: 100%;
+      padding: 6px 8px;
+      border: 1px solid rgba(92, 255, 128, 0.45);
+      border-radius: 4px;
+      background: rgba(2, 8, 2, 0.9);
+      color: #b4ffbe;
+      font-family: inherit;
+      font-size: 0.95rem;
+    }
+
+    .redmine-actions {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .redmine-status,
+    .redmine-summary {
+      min-height: 1.2em;
+      font-size: 0.9rem;
+      color: #9dffad;
+    }
+
+    .ticket-list {
+      display: grid;
+      gap: 6px;
+      font-size: 0.95rem;
+      max-height: 40dvh;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .ticket-row {
+      display: grid;
+      gap: 2px;
+      border: 1px solid rgba(92, 255, 128, 0.2);
+      border-radius: 4px;
+      padding: 6px 8px;
+      color: #b4ffbe;
+      text-decoration: none;
+      background: rgba(8, 20, 9, 0.7);
+    }
+
+    .ticket-row:hover {
+      background: rgba(15, 32, 16, 0.9);
+    }
+
+    .ticket-row-meta {
+      color: #9dffad;
+      font-size: 0.85rem;
+    }
+
+    .ticket-row.is-overdue {
+      border-color: rgba(255, 104, 104, 0.8);
+      color: #ffd0d0;
+    }
+
+    .ticket-row.is-due-today {
+      border-color: rgba(240, 206, 70, 0.8);
+      color: #fff1b2;
+    }
+
+    .ticket-row.is-closed {
+      opacity: 0.6;
+    }
+
     @media (max-width: 900px) {
       main {
         grid-template-columns: 1fr;
@@ -189,6 +280,30 @@
       <div id="zipStatus" class="zip-status"></div>
       <div id="weatherCurrent" class="value">取得中...</div>
       <div id="forecast" class="forecast">週間予報を取得中...</div>
+
+      <div class="sub-label">Redmineチケット</div>
+      <form id="redmineForm" class="redmine-config">
+        <label for="redmineBaseUrl">Redmine URL</label>
+        <input id="redmineBaseUrl" type="url" placeholder="https://redmine.example.com" />
+
+        <label for="redmineApiKey">APIキー</label>
+        <input id="redmineApiKey" type="password" placeholder="xxxxxxxxxxxxxxxx" autocomplete="off" />
+
+        <label for="redmineTarget">取得対象</label>
+        <select id="redmineTarget">
+          <option value="assigned">担当チケット</option>
+          <option value="authored">起票チケット</option>
+        </select>
+
+        <div class="redmine-actions">
+          <button type="submit">保存して取得</button>
+          <button type="button" id="redmineRefresh">再取得</button>
+          <button type="button" id="redmineReset">クリア</button>
+        </div>
+      </form>
+      <div id="redmineStatus" class="redmine-status">未設定</div>
+      <div id="redmineSummary" class="redmine-summary"></div>
+      <div id="redmineList" class="ticket-list">設定するとチケット一覧を表示します。</div>
     </section>
   </main>
 
@@ -200,6 +315,9 @@
       zip: ''
     };
     const ZIP_STORAGE_KEY = 'clock_weather_zip';
+    const REDMINE_BASE_URL_KEY = 'clock_redmine_base_url';
+    const REDMINE_API_KEY = 'clock_redmine_api_key';
+    const REDMINE_TARGET_KEY = 'clock_redmine_target';
 
     function weatherCodeToJa(code) {
       const map = {
@@ -249,6 +367,147 @@
         forecast_days: '7'
       });
       return `https://api.open-meteo.com/v1/forecast?${params.toString()}`;
+    }
+
+    function normalizeBaseUrl(rawUrl) {
+      return String(rawUrl || '').trim().replace(/\/+$/, '');
+    }
+
+    function getJstYmd() {
+      return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
+    }
+
+    function buildRedmineIssuesUrl(baseUrl, target) {
+      const params = new URLSearchParams({
+        status_id: '*',
+        sort: 'due_date:asc,priority:desc,id:desc',
+        limit: '50'
+      });
+      params.set(target === 'authored' ? 'author_id' : 'assigned_to_id', 'me');
+      return `${baseUrl}/issues.json?${params.toString()}`;
+    }
+
+    async function fetchRedmineIssues(baseUrl, apiKey, target) {
+      const response = await fetch(buildRedmineIssuesUrl(baseUrl, target), {
+        cache: 'no-store',
+        headers: {
+          'X-Redmine-API-Key': apiKey
+        }
+      });
+      if (!response.ok) {
+        const error = new Error(`HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
+      }
+      return response.json();
+    }
+
+    function redmineIssueUrl(baseUrl, issueId) {
+      return `${baseUrl}/issues/${issueId}`;
+    }
+
+    function renderRedmineIssues(baseUrl, issues, totalCount) {
+      const listEl = document.getElementById('redmineList');
+      const summaryEl = document.getElementById('redmineSummary');
+      const today = getJstYmd();
+      const overdueCount = issues.filter((issue) => issue.due_date && issue.due_date < today).length;
+      const dueTodayCount = issues.filter((issue) => issue.due_date === today).length;
+
+      summaryEl.textContent = `総件数 ${totalCount} / 期限切れ ${overdueCount} / 本日期限 ${dueTodayCount}`;
+
+      if (!issues.length) {
+        listEl.textContent = '表示対象のチケットはありません。';
+        return;
+      }
+
+      const fragment = document.createDocumentFragment();
+      issues.forEach((issue) => {
+        const row = document.createElement('a');
+        row.className = 'ticket-row';
+        row.target = '_blank';
+        row.rel = 'noopener noreferrer';
+        row.href = redmineIssueUrl(baseUrl, issue.id);
+
+        const statusName = issue.status?.name || '-';
+        const dueDate = issue.due_date || '-';
+        const isClosed = /closed|resolved|完了|終了/i.test(statusName);
+        if (issue.due_date && issue.due_date < today) row.classList.add('is-overdue');
+        else if (issue.due_date === today) row.classList.add('is-due-today');
+        if (isClosed) row.classList.add('is-closed');
+
+        const title = document.createElement('div');
+        title.textContent = `#${issue.id} ${issue.subject}`;
+        const meta = document.createElement('div');
+        meta.className = 'ticket-row-meta';
+        meta.textContent = `${issue.project?.name || '-'} / ${statusName} / ${issue.priority?.name || '-'} / 期日 ${dueDate}`;
+
+        row.append(title, meta);
+        fragment.appendChild(row);
+      });
+
+      listEl.replaceChildren(fragment);
+    }
+
+    function loadRedmineSettings() {
+      return {
+        baseUrl: normalizeBaseUrl(localStorage.getItem(REDMINE_BASE_URL_KEY) || ''),
+        apiKey: String(localStorage.getItem(REDMINE_API_KEY) || ''),
+        target: localStorage.getItem(REDMINE_TARGET_KEY) || 'assigned'
+      };
+    }
+
+    function saveRedmineSettings(baseUrl, apiKey, target) {
+      localStorage.setItem(REDMINE_BASE_URL_KEY, baseUrl);
+      localStorage.setItem(REDMINE_API_KEY, apiKey);
+      localStorage.setItem(REDMINE_TARGET_KEY, target);
+    }
+
+    function setRedmineForm(settings) {
+      document.getElementById('redmineBaseUrl').value = settings.baseUrl;
+      document.getElementById('redmineApiKey').value = settings.apiKey;
+      document.getElementById('redmineTarget').value = settings.target;
+    }
+
+    function mapRedmineError(error) {
+      if (error?.status === 401 || error?.status === 403) return '認証に失敗しました（APIキーを確認してください）';
+      if (error?.status === 404) return 'Redmine API endpoint が見つかりません';
+      if (String(error?.message || '').startsWith('HTTP')) return `Redmine APIエラー ${error.message}`;
+      if (error instanceof TypeError) return 'CORS設定によりブラウザからアクセスできない可能性があります';
+      return `取得に失敗: ${String(error?.message || error)}`;
+    }
+
+    async function updateRedmineTickets() {
+      const statusEl = document.getElementById('redmineStatus');
+      const listEl = document.getElementById('redmineList');
+      const settings = {
+        baseUrl: normalizeBaseUrl(document.getElementById('redmineBaseUrl').value),
+        apiKey: String(document.getElementById('redmineApiKey').value || '').trim(),
+        target: document.getElementById('redmineTarget').value === 'authored' ? 'authored' : 'assigned'
+      };
+
+      if (!settings.baseUrl) {
+        statusEl.textContent = 'Redmine URLを入力してください。';
+        return;
+      }
+      if (!settings.apiKey) {
+        statusEl.textContent = 'APIキーを入力してください。';
+        return;
+      }
+
+      statusEl.textContent = 'Redmineチケットを取得中...';
+      try {
+        const data = await fetchRedmineIssues(settings.baseUrl, settings.apiKey, settings.target);
+        const issues = Array.isArray(data.issues) ? data.issues : [];
+        renderRedmineIssues(settings.baseUrl, issues, data.total_count || issues.length);
+        const now = new Date().toLocaleTimeString('ja-JP', { hour12: false });
+        const note = (data.total_count || 0) > issues.length ? `（${issues.length}件まで表示）` : '';
+        statusEl.textContent = `更新完了 ${now} ${note}`.trim();
+      } catch (error) {
+        statusEl.textContent = mapRedmineError(error);
+        if (!listEl.childElementCount) {
+          listEl.textContent = 'チケットを表示できませんでした。';
+        }
+      }
     }
 
     async function resolveLocationByZip(zip) {
@@ -393,8 +652,39 @@
       await applyZipSetting('');
     });
 
+    document.getElementById('redmineForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const settings = {
+        baseUrl: normalizeBaseUrl(document.getElementById('redmineBaseUrl').value),
+        apiKey: String(document.getElementById('redmineApiKey').value || '').trim(),
+        target: document.getElementById('redmineTarget').value === 'authored' ? 'authored' : 'assigned'
+      };
+      saveRedmineSettings(settings.baseUrl, settings.apiKey, settings.target);
+      await updateRedmineTickets();
+    });
+
+    document.getElementById('redmineRefresh').addEventListener('click', async () => {
+      await updateRedmineTickets();
+    });
+
+    document.getElementById('redmineReset').addEventListener('click', () => {
+      localStorage.removeItem(REDMINE_BASE_URL_KEY);
+      localStorage.removeItem(REDMINE_API_KEY);
+      localStorage.removeItem(REDMINE_TARGET_KEY);
+      setRedmineForm({ baseUrl: '', apiKey: '', target: 'assigned' });
+      document.getElementById('redmineStatus').textContent = '設定をクリアしました。';
+      document.getElementById('redmineSummary').textContent = '';
+      document.getElementById('redmineList').textContent = '設定するとチケット一覧を表示します。';
+    });
+
     updateClock();
     setInterval(updateClock, 1000);
+
+    const redmineSettings = loadRedmineSettings();
+    setRedmineForm(redmineSettings);
+    if (redmineSettings.baseUrl && redmineSettings.apiKey) {
+      updateRedmineTickets();
+    }
 
     const savedZip = normalizeZip(localStorage.getItem(ZIP_STORAGE_KEY) || '');
     if (savedZip) {
@@ -405,6 +695,7 @@
       updateWeather();
     }
     setInterval(updateWeather, 10 * 60 * 1000);
+    setInterval(updateRedmineTickets, 5 * 60 * 1000);
     setInterval(() => location.reload(), 5 * 60 * 1000);
   </script>
 </body>
