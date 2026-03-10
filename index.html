@@ -304,6 +304,11 @@
           <option value="authored">起票チケット</option>
         </select>
 
+        <label>
+          <input id="redmineHideClosed" type="checkbox" checked />
+          終了扱いのチケットを非表示にする
+        </label>
+
         <div class="redmine-actions">
           <button type="submit">保存して取得</button>
           <button type="button" id="redmineRefresh">再取得</button>
@@ -327,6 +332,7 @@
     const REDMINE_BASE_URL_KEY = 'clock_redmine_base_url';
     const REDMINE_API_KEY = 'clock_redmine_api_key';
     const REDMINE_TARGET_KEY = 'clock_redmine_target';
+    const REDMINE_HIDE_CLOSED_KEY = 'clock_redmine_hide_closed';
 
     function weatherCodeToJa(code) {
       const map = {
@@ -432,10 +438,15 @@
       return `${baseUrl}/issues/${issueId}`;
     }
 
+    function isClosedLikeStatus(statusName) {
+      return /closed|resolved|完了|終了/i.test(statusName);
+    }
+
     function renderRedmineIssues(baseUrl, issues, totalCount) {
       const listEl = document.getElementById('redmineList');
       const summaryEl = document.getElementById('redmineSummary');
       const today = getJstYmd();
+      const hideClosed = document.getElementById('redmineHideClosed').checked;
       const sortedIssues = [...issues].sort((a, b) => {
         const dueA = a.due_date || '9999-12-31';
         const dueB = b.due_date || '9999-12-31';
@@ -448,18 +459,22 @@
         return b.id - a.id;
       });
 
-      const overdueCount = sortedIssues.filter((issue) => issue.due_date && issue.due_date < today).length;
-      const dueTodayCount = sortedIssues.filter((issue) => issue.due_date === today).length;
+      const visibleIssues = hideClosed
+        ? sortedIssues.filter((issue) => !isClosedLikeStatus(issue.status?.name || ''))
+        : sortedIssues;
 
-      summaryEl.textContent = `表示 ${sortedIssues.length} / 総件数 ${totalCount} / 期限切れ ${overdueCount} / 本日期限 ${dueTodayCount}`;
+      const overdueCount = visibleIssues.filter((issue) => issue.due_date && issue.due_date < today).length;
+      const dueTodayCount = visibleIssues.filter((issue) => issue.due_date === today).length;
 
-      if (!sortedIssues.length) {
+      summaryEl.textContent = `表示 ${visibleIssues.length} / 総件数 ${totalCount} / 期限切れ ${overdueCount} / 本日期限 ${dueTodayCount}`;
+
+      if (!visibleIssues.length) {
         listEl.textContent = '表示対象のチケットはありません。';
         return;
       }
 
       const fragment = document.createDocumentFragment();
-      sortedIssues.forEach((issue) => {
+      visibleIssues.forEach((issue) => {
         const row = document.createElement('a');
         row.className = 'ticket-row';
         row.target = '_blank';
@@ -470,7 +485,7 @@
         const dueDate = issue.due_date || '-';
         if (issue.due_date && issue.due_date < today) row.classList.add('is-overdue');
         else if (issue.due_date === today) row.classList.add('is-due-today');
-        if (/closed|resolved|完了|終了/i.test(statusName)) row.classList.add('is-closed');
+        if (isClosedLikeStatus(statusName)) row.classList.add('is-closed');
 
         const title = document.createElement('div');
         title.textContent = `#${issue.id} ${issue.subject}`;
@@ -489,20 +504,23 @@
       return {
         baseUrl: normalizeBaseUrl(localStorage.getItem(REDMINE_BASE_URL_KEY) || ''),
         apiKey: String(localStorage.getItem(REDMINE_API_KEY) || ''),
-        target: localStorage.getItem(REDMINE_TARGET_KEY) || 'assigned'
+        target: localStorage.getItem(REDMINE_TARGET_KEY) || 'assigned',
+        hideClosed: localStorage.getItem(REDMINE_HIDE_CLOSED_KEY) !== 'false'
       };
     }
 
-    function saveRedmineSettings(baseUrl, apiKey, target) {
+    function saveRedmineSettings(baseUrl, apiKey, target, hideClosed) {
       localStorage.setItem(REDMINE_BASE_URL_KEY, baseUrl);
       localStorage.setItem(REDMINE_API_KEY, apiKey);
       localStorage.setItem(REDMINE_TARGET_KEY, target);
+      localStorage.setItem(REDMINE_HIDE_CLOSED_KEY, String(hideClosed));
     }
 
     function setRedmineForm(settings) {
       document.getElementById('redmineBaseUrl').value = settings.baseUrl;
       document.getElementById('redmineApiKey').value = settings.apiKey;
       document.getElementById('redmineTarget').value = settings.target;
+      document.getElementById('redmineHideClosed').checked = settings.hideClosed;
     }
 
     function mapRedmineError(error) {
@@ -693,9 +711,10 @@
       const settings = {
         baseUrl: normalizeBaseUrl(document.getElementById('redmineBaseUrl').value),
         apiKey: String(document.getElementById('redmineApiKey').value || '').trim(),
-        target: document.getElementById('redmineTarget').value === 'authored' ? 'authored' : 'assigned'
+        target: document.getElementById('redmineTarget').value === 'authored' ? 'authored' : 'assigned',
+        hideClosed: document.getElementById('redmineHideClosed').checked
       };
-      saveRedmineSettings(settings.baseUrl, settings.apiKey, settings.target);
+      saveRedmineSettings(settings.baseUrl, settings.apiKey, settings.target, settings.hideClosed);
       await updateRedmineTickets();
     });
 
@@ -703,11 +722,24 @@
       await updateRedmineTickets();
     });
 
+
+    document.getElementById('redmineHideClosed').addEventListener('change', () => {
+      const settings = {
+        baseUrl: normalizeBaseUrl(document.getElementById('redmineBaseUrl').value),
+        apiKey: String(document.getElementById('redmineApiKey').value || '').trim(),
+        target: document.getElementById('redmineTarget').value === 'authored' ? 'authored' : 'assigned',
+        hideClosed: document.getElementById('redmineHideClosed').checked
+      };
+      saveRedmineSettings(settings.baseUrl, settings.apiKey, settings.target, settings.hideClosed);
+      updateRedmineTickets();
+    });
+
     document.getElementById('redmineReset').addEventListener('click', () => {
       localStorage.removeItem(REDMINE_BASE_URL_KEY);
       localStorage.removeItem(REDMINE_API_KEY);
       localStorage.removeItem(REDMINE_TARGET_KEY);
-      setRedmineForm({ baseUrl: '', apiKey: '', target: 'assigned' });
+      localStorage.removeItem(REDMINE_HIDE_CLOSED_KEY);
+      setRedmineForm({ baseUrl: '', apiKey: '', target: 'assigned', hideClosed: true });
       document.getElementById('redmineStatus').textContent = '設定をクリアしました。';
       document.getElementById('redmineSummary').textContent = '';
       document.getElementById('redmineList').textContent = '設定するとチケット一覧を表示します。';
