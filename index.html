@@ -362,6 +362,7 @@
     const REDMINE_BASE_URL_KEY = 'clock_redmine_base_url';
     const REDMINE_API_KEY = 'clock_redmine_api_key';
     const REDMINE_TARGET_KEY = 'clock_redmine_target';
+    const REDMINE_HIDE_CLOSED_KEY = 'clock_redmine_hide_closed';
     const REDMINE_STATUS_FILTER_KEY = 'clock_redmine_status_filter';
 
     let latestRedmineData = null;
@@ -865,9 +866,10 @@
       localStorage.removeItem(REDMINE_BASE_URL_KEY);
       localStorage.removeItem(REDMINE_API_KEY);
       localStorage.removeItem(REDMINE_TARGET_KEY);
+      localStorage.removeItem(REDMINE_HIDE_CLOSED_KEY);
       localStorage.removeItem(REDMINE_STATUS_FILTER_KEY);
       latestRedmineData = null;
-      setRedmineForm({ baseUrl: '', apiKey: '', target: 'assigned' });
+      setRedmineForm({ baseUrl: '', apiKey: '', target: 'assigned', hideClosed: true });
       document.getElementById('redmineStatus').textContent = '設定をクリアしました。';
       document.getElementById('redmineSummary').textContent = '';
       document.getElementById('redmineStatusFilters').textContent = '';
