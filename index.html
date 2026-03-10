@@ -386,29 +386,46 @@
       return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
     }
 
-    function buildRedmineIssuesUrl(baseUrl, target) {
+    function buildRedmineIssuesUrl(baseUrl, target, limit, offset) {
       const params = new URLSearchParams({
         status_id: '*',
-        sort: 'due_date:asc,id:desc',
-        limit: '50'
+        sort: 'due_date:asc,priority:desc,id:desc',
+        limit: String(limit),
+        offset: String(offset)
       });
       params.set(target === 'authored' ? 'author_id' : 'assigned_to_id', 'me');
       return `${baseUrl}/issues.json?${params.toString()}`;
     }
 
     async function fetchRedmineIssues(baseUrl, apiKey, target) {
-      const response = await fetch(buildRedmineIssuesUrl(baseUrl, target), {
-        cache: 'no-store',
-        headers: {
-          'X-Redmine-API-Key': apiKey
+      const pageSize = 100;
+      let offset = 0;
+      let totalCount = null;
+      const issues = [];
+
+      while (totalCount === null || offset < totalCount) {
+        const response = await fetch(buildRedmineIssuesUrl(baseUrl, target, pageSize, offset), {
+          cache: 'no-store',
+          headers: {
+            'X-Redmine-API-Key': apiKey
+          }
+        });
+        if (!response.ok) {
+          const error = new Error(`HTTP ${response.status}`);
+          error.status = response.status;
+          throw error;
         }
-      });
-      if (!response.ok) {
-        const error = new Error(`HTTP ${response.status}`);
-        error.status = response.status;
-        throw error;
+
+        const data = await response.json();
+        const pageIssues = Array.isArray(data.issues) ? data.issues : [];
+        issues.push(...pageIssues);
+
+        totalCount = Number.isFinite(data.total_count) ? data.total_count : issues.length;
+        if (!pageIssues.length) break;
+        offset += pageIssues.length;
       }
-      return response.json();
+
+      return { issues, total_count: totalCount ?? issues.length };
     }
 
     function redmineIssueUrl(baseUrl, issueId) {
@@ -419,27 +436,30 @@
       const listEl = document.getElementById('redmineList');
       const summaryEl = document.getElementById('redmineSummary');
       const today = getJstYmd();
-      const activeIssues = issues
-        .filter((issue) => !/closed|resolved|完了|終了/i.test(issue.status?.name || ''))
-        .sort((a, b) => {
-          const dueA = a.due_date || '9999-12-31';
-          const dueB = b.due_date || '9999-12-31';
-          if (dueA !== dueB) return dueA.localeCompare(dueB);
-          return b.id - a.id;
-        });
+      const sortedIssues = [...issues].sort((a, b) => {
+        const dueA = a.due_date || '9999-12-31';
+        const dueB = b.due_date || '9999-12-31';
+        if (dueA !== dueB) return dueA.localeCompare(dueB);
 
-      const overdueCount = activeIssues.filter((issue) => issue.due_date && issue.due_date < today).length;
-      const dueTodayCount = activeIssues.filter((issue) => issue.due_date === today).length;
+        const priorityA = Number(a.priority?.id || 0);
+        const priorityB = Number(b.priority?.id || 0);
+        if (priorityA !== priorityB) return priorityB - priorityA;
 
-      summaryEl.textContent = `表示 ${activeIssues.length} / 総件数 ${totalCount} / 期限切れ ${overdueCount} / 本日期限 ${dueTodayCount}`;
+        return b.id - a.id;
+      });
 
-      if (!activeIssues.length) {
+      const overdueCount = sortedIssues.filter((issue) => issue.due_date && issue.due_date < today).length;
+      const dueTodayCount = sortedIssues.filter((issue) => issue.due_date === today).length;
+
+      summaryEl.textContent = `表示 ${sortedIssues.length} / 総件数 ${totalCount} / 期限切れ ${overdueCount} / 本日期限 ${dueTodayCount}`;
+
+      if (!sortedIssues.length) {
         listEl.textContent = '表示対象のチケットはありません。';
         return;
       }
 
       const fragment = document.createDocumentFragment();
-      activeIssues.forEach((issue) => {
+      sortedIssues.forEach((issue) => {
         const row = document.createElement('a');
         row.className = 'ticket-row';
         row.target = '_blank';
@@ -450,6 +470,7 @@
         const dueDate = issue.due_date || '-';
         if (issue.due_date && issue.due_date < today) row.classList.add('is-overdue');
         else if (issue.due_date === today) row.classList.add('is-due-today');
+        if (/closed|resolved|完了|終了/i.test(statusName)) row.classList.add('is-closed');
 
         const title = document.createElement('div');
         title.textContent = `#${issue.id} ${issue.subject}`;
@@ -516,8 +537,7 @@
         const issues = Array.isArray(data.issues) ? data.issues : [];
         renderRedmineIssues(settings.baseUrl, issues, data.total_count || issues.length);
         const now = new Date().toLocaleTimeString('ja-JP', { hour12: false });
-        const note = (data.total_count || 0) > issues.length ? `（${issues.length}件まで表示）` : '';
-        statusEl.textContent = `更新完了 ${now} ${note}`.trim();
+        statusEl.textContent = `更新完了 ${now}`;
       } catch (error) {
         statusEl.textContent = mapRedmineError(error);
         if (!listEl.childElementCount) {
