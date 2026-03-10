@@ -333,6 +333,11 @@
           <option value="authored">起票チケット</option>
         </select>
 
+        <label>
+          <input id="redmineHideClosed" type="checkbox" checked />
+          終了扱いのチケットを非表示にする
+        </label>
+
         <div class="redmine-actions">
           <button type="submit">保存して取得</button>
           <button type="button" id="redmineRefresh">再取得</button>
@@ -360,6 +365,7 @@
     const REDMINE_STATUS_FILTER_KEY = 'clock_redmine_status_filter';
 
     let latestRedmineData = null;
+
 
     function weatherCodeToJa(code) {
       const map = {
@@ -625,20 +631,23 @@
       return {
         baseUrl: normalizeBaseUrl(localStorage.getItem(REDMINE_BASE_URL_KEY) || ''),
         apiKey: String(localStorage.getItem(REDMINE_API_KEY) || ''),
-        target: localStorage.getItem(REDMINE_TARGET_KEY) || 'assigned'
+        target: localStorage.getItem(REDMINE_TARGET_KEY) || 'assigned',
+        hideClosed: localStorage.getItem(REDMINE_HIDE_CLOSED_KEY) !== 'false'
       };
     }
 
-    function saveRedmineSettings(baseUrl, apiKey, target) {
+    function saveRedmineSettings(baseUrl, apiKey, target, hideClosed) {
       localStorage.setItem(REDMINE_BASE_URL_KEY, baseUrl);
       localStorage.setItem(REDMINE_API_KEY, apiKey);
       localStorage.setItem(REDMINE_TARGET_KEY, target);
+      localStorage.setItem(REDMINE_HIDE_CLOSED_KEY, String(hideClosed));
     }
 
     function setRedmineForm(settings) {
       document.getElementById('redmineBaseUrl').value = settings.baseUrl;
       document.getElementById('redmineApiKey').value = settings.apiKey;
       document.getElementById('redmineTarget').value = settings.target;
+      document.getElementById('redmineHideClosed').checked = settings.hideClosed;
     }
 
     function mapRedmineError(error) {
@@ -840,9 +849,10 @@
       const settings = {
         baseUrl: normalizeBaseUrl(document.getElementById('redmineBaseUrl').value),
         apiKey: String(document.getElementById('redmineApiKey').value || '').trim(),
-        target: document.getElementById('redmineTarget').value === 'authored' ? 'authored' : 'assigned'
+        target: document.getElementById('redmineTarget').value === 'authored' ? 'authored' : 'assigned',
+        hideClosed: document.getElementById('redmineHideClosed').checked
       };
-      saveRedmineSettings(settings.baseUrl, settings.apiKey, settings.target);
+      saveRedmineSettings(settings.baseUrl, settings.apiKey, settings.target, settings.hideClosed);
       await updateRedmineTickets();
     });
 
