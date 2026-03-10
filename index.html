@@ -208,6 +208,35 @@
       color: #9dffad;
     }
 
+    .redmine-status-filters {
+      display: grid;
+      gap: 6px;
+      font-size: 0.88rem;
+      color: #9dffad;
+    }
+
+    .redmine-status-filters-title {
+      font-weight: 700;
+      color: #61ff84;
+    }
+
+    .redmine-status-filters-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 4px 8px;
+    }
+
+    .redmine-status-filter {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .redmine-status-filter input {
+      width: auto;
+      margin: 0;
+    }
+
     .ticket-list {
       display: grid;
       gap: 6px;
@@ -312,6 +341,7 @@
       </form>
       <div id="redmineStatus" class="redmine-status">未設定</div>
       <div id="redmineSummary" class="redmine-summary"></div>
+      <div id="redmineStatusFilters" class="redmine-status-filters"></div>
       <div id="redmineList" class="ticket-list">設定するとチケット一覧を表示します。</div>
     </section>
   </main>
@@ -327,6 +357,9 @@
     const REDMINE_BASE_URL_KEY = 'clock_redmine_base_url';
     const REDMINE_API_KEY = 'clock_redmine_api_key';
     const REDMINE_TARGET_KEY = 'clock_redmine_target';
+    const REDMINE_STATUS_FILTER_KEY = 'clock_redmine_status_filter';
+
+    let latestRedmineData = null;
 
     function weatherCodeToJa(code) {
       const map = {
@@ -397,6 +430,22 @@
       return `${baseUrl}/issues.json?${params.toString()}`;
     }
 
+    async function fetchRedmineStatuses(baseUrl, apiKey) {
+      const response = await fetch(`${baseUrl}/issue_statuses.json`, {
+        cache: 'no-store',
+        headers: {
+          'X-Redmine-API-Key': apiKey
+        }
+      });
+      if (!response.ok) {
+        const error = new Error(`HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
+      }
+      const data = await response.json();
+      return Array.isArray(data.issue_statuses) ? data.issue_statuses : [];
+    }
+
     async function fetchRedmineIssues(baseUrl, apiKey, target) {
       const pageSize = 100;
       let offset = 0;
@@ -432,10 +481,94 @@
       return `${baseUrl}/issues/${issueId}`;
     }
 
-    function renderRedmineIssues(baseUrl, issues, totalCount) {
+    function isClosedLikeStatus(status) {
+      if (!status) return false;
+      if (status.is_closed === true) return true;
+      return /closed|resolved|完了|終了/i.test(status.name || '');
+    }
+
+    function getDefaultStatusFilter(statuses) {
+      return statuses.filter((status) => !isClosedLikeStatus(status)).map((status) => status.id);
+    }
+
+    function loadSelectedStatusIds(statuses) {
+      const defaultIds = getDefaultStatusFilter(statuses);
+      try {
+        const raw = localStorage.getItem(REDMINE_STATUS_FILTER_KEY);
+        if (!raw) return defaultIds;
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return defaultIds;
+        const allowed = new Set(statuses.map((status) => status.id));
+        const normalized = parsed
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && allowed.has(id));
+        return normalized.length ? normalized : defaultIds;
+      } catch (_error) {
+        return defaultIds;
+      }
+    }
+
+    function saveSelectedStatusIds(ids) {
+      localStorage.setItem(REDMINE_STATUS_FILTER_KEY, JSON.stringify(ids));
+    }
+
+    function getCheckedStatusIdsFromUi() {
+      return Array.from(document.querySelectorAll('input[name="redmineStatusFilter"]:checked'))
+        .map((input) => Number(input.value))
+        .filter((id) => Number.isFinite(id));
+    }
+
+    function renderStatusFilters(statuses, selectedIds) {
+      const wrap = document.getElementById('redmineStatusFilters');
+      wrap.textContent = '';
+      if (!statuses.length) return;
+
+      const title = document.createElement('div');
+      title.className = 'redmine-status-filters-title';
+      title.textContent = '表示ステータス';
+      const grid = document.createElement('div');
+      grid.className = 'redmine-status-filters-grid';
+      const selectedSet = new Set(selectedIds);
+
+      statuses.forEach((status) => {
+        const label = document.createElement('label');
+        label.className = 'redmine-status-filter';
+
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.name = 'redmineStatusFilter';
+        input.value = String(status.id);
+        input.checked = selectedSet.has(status.id);
+        input.addEventListener('change', () => {
+          const checkedIds = getCheckedStatusIdsFromUi();
+          saveSelectedStatusIds(checkedIds);
+          if (latestRedmineData) {
+            renderRedmineIssues(
+              latestRedmineData.baseUrl,
+              latestRedmineData.issues,
+              latestRedmineData.totalCount,
+              latestRedmineData.statuses,
+              checkedIds
+            );
+          }
+        });
+
+        const text = document.createElement('span');
+        text.textContent = status.name;
+
+        label.append(input, text);
+        grid.appendChild(label);
+      });
+
+      wrap.append(title, grid);
+    }
+
+    function renderRedmineIssues(baseUrl, issues, totalCount, statuses, selectedStatusIds) {
       const listEl = document.getElementById('redmineList');
       const summaryEl = document.getElementById('redmineSummary');
       const today = getJstYmd();
+      const selectedSet = new Set(selectedStatusIds);
+
       const sortedIssues = [...issues].sort((a, b) => {
         const dueA = a.due_date || '9999-12-31';
         const dueB = b.due_date || '9999-12-31';
@@ -448,18 +581,21 @@
         return b.id - a.id;
       });
 
-      const overdueCount = sortedIssues.filter((issue) => issue.due_date && issue.due_date < today).length;
-      const dueTodayCount = sortedIssues.filter((issue) => issue.due_date === today).length;
+      const visibleIssues = sortedIssues.filter((issue) => selectedSet.has(Number(issue.status?.id)));
 
-      summaryEl.textContent = `表示 ${sortedIssues.length} / 総件数 ${totalCount} / 期限切れ ${overdueCount} / 本日期限 ${dueTodayCount}`;
+      const overdueCount = visibleIssues.filter((issue) => issue.due_date && issue.due_date < today).length;
+      const dueTodayCount = visibleIssues.filter((issue) => issue.due_date === today).length;
 
-      if (!sortedIssues.length) {
+      summaryEl.textContent = `表示 ${visibleIssues.length} / 総件数 ${totalCount} / 期限切れ ${overdueCount} / 本日期限 ${dueTodayCount}`;
+
+      if (!visibleIssues.length) {
         listEl.textContent = '表示対象のチケットはありません。';
         return;
       }
 
+      const closedStatusIds = new Set(statuses.filter((status) => isClosedLikeStatus(status)).map((status) => status.id));
       const fragment = document.createDocumentFragment();
-      sortedIssues.forEach((issue) => {
+      visibleIssues.forEach((issue) => {
         const row = document.createElement('a');
         row.className = 'ticket-row';
         row.target = '_blank';
@@ -470,7 +606,7 @@
         const dueDate = issue.due_date || '-';
         if (issue.due_date && issue.due_date < today) row.classList.add('is-overdue');
         else if (issue.due_date === today) row.classList.add('is-due-today');
-        if (/closed|resolved|完了|終了/i.test(statusName)) row.classList.add('is-closed');
+        if (closedStatusIds.has(Number(issue.status?.id))) row.classList.add('is-closed');
 
         const title = document.createElement('div');
         title.textContent = `#${issue.id} ${issue.subject}`;
@@ -533,9 +669,20 @@
 
       statusEl.textContent = 'Redmineチケットを取得中...';
       try {
-        const data = await fetchRedmineIssues(settings.baseUrl, settings.apiKey, settings.target);
+        const [statuses, data] = await Promise.all([
+          fetchRedmineStatuses(settings.baseUrl, settings.apiKey),
+          fetchRedmineIssues(settings.baseUrl, settings.apiKey, settings.target)
+        ]);
         const issues = Array.isArray(data.issues) ? data.issues : [];
-        renderRedmineIssues(settings.baseUrl, issues, data.total_count || issues.length);
+        const selectedStatusIds = loadSelectedStatusIds(statuses);
+        latestRedmineData = {
+          baseUrl: settings.baseUrl,
+          issues,
+          totalCount: data.total_count || issues.length,
+          statuses
+        };
+        renderStatusFilters(statuses, selectedStatusIds);
+        renderRedmineIssues(settings.baseUrl, issues, data.total_count || issues.length, statuses, selectedStatusIds);
         const now = new Date().toLocaleTimeString('ja-JP', { hour12: false });
         statusEl.textContent = `更新完了 ${now}`;
       } catch (error) {
@@ -703,13 +850,17 @@
       await updateRedmineTickets();
     });
 
+
     document.getElementById('redmineReset').addEventListener('click', () => {
       localStorage.removeItem(REDMINE_BASE_URL_KEY);
       localStorage.removeItem(REDMINE_API_KEY);
       localStorage.removeItem(REDMINE_TARGET_KEY);
+      localStorage.removeItem(REDMINE_STATUS_FILTER_KEY);
+      latestRedmineData = null;
       setRedmineForm({ baseUrl: '', apiKey: '', target: 'assigned' });
       document.getElementById('redmineStatus').textContent = '設定をクリアしました。';
       document.getElementById('redmineSummary').textContent = '';
+      document.getElementById('redmineStatusFilters').textContent = '';
       document.getElementById('redmineList').textContent = '設定するとチケット一覧を表示します。';
     });
 
